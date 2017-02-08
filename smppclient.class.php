@@ -518,7 +518,7 @@ class SmppClient
 		$dataCoding = next($ar);
 		next($ar); // sm_default_msg_id 
 		$sm_length = next($ar);
-		$message = $this->getString($ar,$sm_length);
+		$message = $this->getOctets($ar,$sm_length);
 		
 		// Check for optional params, and parse them
 		if (current($ar) !== false) {
@@ -567,19 +567,19 @@ class SmppClient
 	{
 		// Check the queue first
 		$ql = count($this->pdu_queue);
-		for($i=0;$i<$ql;$i++) {
-			$pdu=$this->pdu_queue[$i];
-			if($pdu->id==SMPP::ENQUIRE_LINK) {
-				//remove response
-				array_splice($this->pdu_queue, $i, 1);
-				$this->sendPDU(new SmppPdu(SMPP::ENQUIRE_LINK_RESP, SMPP::ESME_ROK, $pdu->sequence, "\x00"));
-			}
-		}
+	    for($i=0;$i<$ql;$i++) {
+	      $pdu=isset($this->pdu_queue[$i]) ? $this->pdu_queue[$i] : false;
+	      if($pdu && $pdu->id==SMPP::ENQUIRE_LINK) {
+	        //remove response
+	        array_splice($this->pdu_queue, $i, 1);
+	        $this->sendPDU(new SmppPdu(SMPP::ENQUIRE_LINK_RESP, SMPP::ESME_ROK, $pdu->sequence, "\x00"));
+	      }
+	    }
 		
 		// Check the transport for data
 		if ($this->transport->hasData()) {
 			$pdu = $this->readPDU();
-			if($pdu->id==SMPP::ENQUIRE_LINK) {
+			if($pdu && $pdu->id==SMPP::ENQUIRE_LINK) {
 				$this->sendPDU(new SmppPdu(SMPP::ENQUIRE_LINK_RESP, SMPP::ESME_ROK, $pdu->sequence, "\x00"));
 			} else if ($pdu) {
 				array_push($this->pdu_queue, $pdu);
@@ -617,11 +617,12 @@ class SmppClient
 		$pdu = new SmppPdu($id, 0, $this->sequence_number, $pduBody);
 		$this->sendPDU($pdu);
 		$response=$this->readPDU_resp($this->sequence_number, $pdu->id);
+
+		$this->sequence_number++;
+
 		if ($response === false) throw new SmppException('Failed to read reply to command: 0x'.dechex($id));
 		
 		if ($response->status != SMPP::ESME_ROK) throw new SmppException(SMPP::getStatusMessage($response->status), $response->status);
-		
-		$this->sequence_number++;
 		
 		// Reached max sequence number, spec does not state what happens now, so we re-connect
 		if ($this->sequence_number >= 0x7FFFFFFF) {

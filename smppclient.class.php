@@ -315,7 +315,7 @@ class SmppClient
 		if ($doCsms) {
 			if (self::$csms_method == SmppClient::CSMS_PAYLOAD) {
 				$payload = new SmppTag(SmppTag::MESSAGE_PAYLOAD, $message, $msg_length);
-				return $this->submit_sm($from, $to, null, (empty($tags) ? array($payload) : array_merge($tags,$payload)), $dataCoding, $priority, $scheduleDeliveryTime, $validityPeriod);
+				return $this->submit_sm($from, $to, null, (empty($tags) ? array($payload) : array_merge($tags,array($payload))), $dataCoding, $priority, $scheduleDeliveryTime, $validityPeriod);
 			} else if (self::$csms_method == SmppClient::CSMS_8BIT_UDH) {
 				$seqnum = 1;
 				foreach ($parts as $part) {
@@ -1063,7 +1063,7 @@ class SmppDeliveryReceipt extends SmppSms
 	 */
 	public function parseDeliveryReceipt()
 	{
-		$numMatches = preg_match('/^id:([^ ]+) sub:(\d{1,3}) dlvrd:(\d{3}) submit date:(\d{10,12}) done date:(\d{10,12}) stat:([A-Z ]{7}) err:(\d{2,3}) text:(.*)$/si', $this->message, $matches);
+		$numMatches = preg_match('/^id:([^ ]+) sub:(\d{1,3}) dlvrd:(\d{3}) submit date:(\d{10,12}) done date:(\d{10,12}) stat:([A-Z ]{7}) err:(\d{1,5}) text:(.*)$/si', $this->message, $matches);
 		if ($numMatches == 0) {
 			throw new InvalidArgumentException('Could not parse delivery receipt: '.$this->message."\n".bin2hex($this->body));	
 		}

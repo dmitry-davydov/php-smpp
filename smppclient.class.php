@@ -1,6 +1,6 @@
 <?php
 require_once dirname(__FILE__).DIRECTORY_SEPARATOR.'sockettransport.class.php';
-	
+
 /**
  * Class for receiving or sending sms through SMPP protocol.
  * This is a reduced implementation of the SMPP protocol, and as such not all features will or ought to be available.
@@ -339,6 +339,75 @@ class SmppClient
 		
 		return $this->submit_sm($from, $to, $short_message, $tags, $dataCoding);
 	}
+
+  /**
+   * Send one SMS to SMSC. Can be executed only after bindTransmitter() call.
+   * $message is always in octets regardless of the data encoding.
+   * For correct handling of Concatenated SMS, message must be encoded with GSM 03.38 (data_coding 0x00) or UCS-2BE (0x08).
+   * Concatenated SMS'es uses 16-bit reference numbers, which gives 152 GSM 03.38 chars or 66 UCS-2BE chars per CSMS.
+   * If we are using 8-bit ref numbers in the UDH for CSMS it's 153 GSM 03.38 chars
+   *
+   * @param array $batchSendPayloads
+   * @return array message id
+   */
+  public function batchSendSMS(array $batchSendPayloads)
+  {
+    $payloads = [];
+    foreach ($batchSendPayloads as $batchSendPayload) {
+
+      $from = $batchSendPayload['from'];
+      $to = $batchSendPayload['to'];
+      $message = $batchSendPayload['message'];
+      $tags = $batchSendPayload['tags'];
+      $dataCoding = isset($batchSendPayload['dataCoding']) ? $batchSendPayload['dataCoding'] : SMPP::DATA_CODING_DEFAULT;
+      $priority = isset($batchSendPayload['priority']) ? $batchSendPayload['priority'] : 0x00;
+      $scheduleDeliveryTime = isset($batchSendPayload['scheduleDeliveryTime'])
+        ? $batchSendPayload['scheduleDeliveryTime']
+        : null;
+
+      $validityPeriod = isset($batchSendPayload['validityPeriod'])
+        ? $batchSendPayload['validityPeriod']
+        : null;
+
+      $msg_length = strlen($message);
+
+      if ($msg_length > 160 && $dataCoding != SMPP::DATA_CODING_UCS2 && $dataCoding != SMPP::DATA_CODING_DEFAULT) {
+        continue;
+      }
+
+      switch ($dataCoding) {
+        case SMPP::DATA_CODING_UCS2:
+          $singleSmsOctetLimit = 140; // in octets, 70 UCS-2 chars
+          break;
+        case SMPP::DATA_CODING_DEFAULT:
+          $singleSmsOctetLimit = 160; // we send data in octets, but GSM 03.38 will be packed in septets (7-bit) by SMSC.
+          break;
+        default:
+          $singleSmsOctetLimit = 254; // From SMPP standard
+          break;
+      }
+
+      // Figure out if we need to do CSMS, since it will affect our PDU
+      if ($msg_length > $singleSmsOctetLimit) {
+        continue;
+      }
+
+      $payloads[] = [
+        'source' => $from,
+        'destination' => $to,
+        'shortMessage' => $message,
+        'tags' => $tags,
+        'dataCoding' => $dataCoding,
+        'priority' => $priority,
+        'scheduleDeliveryTime' => $scheduleDeliveryTime,
+        'validityPeriod' => $validityPeriod,
+        'esmClass' => null,
+      ];
+
+    }
+
+    return $this->submit_sm_batch($payloads);
+  }
 	
 	/**
 	 * Perform the actual submit_sm call to send SMS.
@@ -393,6 +462,76 @@ class SmppClient
 		$body = unpack("a*msgid",$response->body);
 		return $body['msgid'];
 	}
+
+  protected function submit_sm_batch(array $batch)
+  {
+
+    $payloads = [];
+    $batchResponse = [];
+
+    foreach ($batch as $batchItem) {
+      $pdu = null;
+
+      $source = $batchItem['source'];
+      $destination = $batchItem['destination'];
+      $shortMessage = $batchItem['shortMessage'];
+      $tags = $batchItem['tags'];
+      $dataCoding = $batchItem['dataCoding'];
+      $priority = $batchItem['priority'];
+      $scheduleDeliveryTime = $batchItem['scheduleDeliveryTime'];
+      $validityPeriod = $batchItem['validityPeriod'];
+      $esmClass = $batchItem['esmClass'];
+
+      if (is_null($esmClass)) $esmClass = self::$sms_esm_class;
+
+      // Construct PDU with mandatory fields
+      $pdu = pack('a1cca' . (strlen($source->value) + 1) . 'cca' . (strlen($destination->value) + 1) . 'ccc' . ($scheduleDeliveryTime ? 'a16x' : 'a1') . ($validityPeriod ? 'a16x' : 'a1') . 'ccccca' . (strlen($shortMessage) + (self::$sms_null_terminate_octetstrings ? 1 : 0)),
+        self::$sms_service_type,
+        $source->ton,
+        $source->npi,
+        $source->value,
+        $destination->ton,
+        $destination->npi,
+        $destination->value,
+        $esmClass,
+        self::$sms_protocol_id,
+        $priority,
+        $scheduleDeliveryTime,
+        $validityPeriod,
+        self::$sms_registered_delivery_flag,
+        self::$sms_replace_if_present_flag,
+        $dataCoding,
+        self::$sms_sm_default_msg_id,
+        strlen($shortMessage),//sm_length
+        $shortMessage//short_message
+      );
+
+      // Add any tags
+      if (!empty($tags)) {
+        foreach ($tags as $tag) {
+          $pdu .= $tag->getBinary();
+        }
+      }
+
+      $payloads[] = [SMPP::SUBMIT_SM, $pdu];
+    }
+
+    $batchResponse = $this->sendCommandBatch($payloads);
+
+    return array_map(function ($item) {
+      if ($item instanceof Exception) {
+        return $item;
+      }
+
+      if ($item instanceof SmppPdu) {
+        $body = unpack("a*msgid", $item->body);
+        return $body['msgid'];
+      }
+
+      return $item;
+
+    }, $batchResponse);
+  }
 	
 	/**
 	 * Get a CSMS reference number for sar_msg_ref_num.
@@ -631,6 +770,61 @@ class SmppClient
 		
 		return $response;
 	}
+
+  protected function sendCommandBatch(array $sendCommandBatchData)
+  {
+    if (!$this->transport->isOpen()) return false;
+
+    $shouldReconnect = false;
+
+    $unprocessedPdus = [];
+
+    $pduResp = [];
+    $pduRequest = [];
+
+    foreach ($sendCommandBatchData as $sendCommandBatchDataItem) {
+      list($id, $pduBody) = $sendCommandBatchDataItem;
+      $pdu = new SmppPdu($id, 0, $this->sequence_number, $pduBody);
+
+      if ($this->sequence_number >= 0x7FFFFFFF) {
+        $shouldReconnect = true;
+        $unprocessedPdus[] = $sendCommandBatchDataItem;
+        continue;
+      }
+
+      $this->sendPDU($pdu);
+
+      $pduRequest[] = ['id' => $id, 'pduId' => $pdu->id, 'sequenceNumber' => $this->sequence_number];
+      $this->sequence_number++;
+    }
+
+
+
+
+    foreach ($pduRequest as $data) {
+      $response = $this->readPDU_resp($data['sequenceNumber'], $data['pduId']);
+      if ($response === false) {
+        $response = new SmppException('Failed to read reply to command: 0x' . dechex($data['id']));
+      }
+
+      if ($response->status != SMPP::ESME_ROK) {
+        $response = new SmppException(SMPP::getStatusMessage($response->status), $response->status);
+      }
+
+      $pduResp[] = $response;
+    }
+
+
+    if ($shouldReconnect) {
+      $this->reconnect();
+
+      if (count($unprocessedPdus)) {
+        $pduResp = array_merge($pduResp, $this->sendCommandBatch($unprocessedPdus));
+      }
+    }
+
+    return $pduResp;
+  }
 	
 	/**
 	 * Prepares and sends PDU to SMSC.

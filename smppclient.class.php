@@ -517,6 +517,7 @@ class SmppClient
     }
 
     $batchResponse = $this->sendCommandBatch($payloads);
+    if ($batchResponse === false) return false;
 
     return array_map(function ($item) {
       if ($item instanceof Exception) {

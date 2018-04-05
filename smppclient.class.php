@@ -430,7 +430,7 @@ class SmppClient
 		if (is_null($esmClass)) $esmClass = self::$sms_esm_class;
 		
 		// Construct PDU with mandatory fields
-		$pdu = pack('a1cca'.(strlen($source->value)+1).'cca'.(strlen($destination->value)+1).'ccc'.($scheduleDeliveryTime ? 'a16x' : 'a1').($validityPeriod ? 'a16x' : 'a1').'ccccca'.(strlen($short_message)+(self::$sms_null_terminate_octetstrings ? 1 : 0)),
+		$pdu = pack('a'.(strlen(self::$sms_service_type)+1).'cca'.(strlen($source->value)+1).'cca'.(strlen($destination->value)+1).'ccc'.($scheduleDeliveryTime ? 'a16x' : 'a1').($validityPeriod ? 'a16x' : 'a1').'ccccca'.(strlen($short_message)+(self::$sms_null_terminate_octetstrings ? 1 : 0)),
 			self::$sms_service_type,
 			$source->ton,
 			$source->npi,
